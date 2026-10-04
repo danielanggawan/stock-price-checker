@@ -1,0 +1,101 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #f4f7fb;
+  color: #182230;
+}
+
+.container {
+  width: min(680px, 92%);
+  margin: 60px auto;
+}
+
+.card {
+  background: #fff;
+  padding: 32px;
+  border-radius: 18px;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.08);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #4d6bfe;
+}
+
+h1 {
+  margin: 0 0 10px;
+}
+
+.description {
+  color: #64748b;
+}
+
+form {
+  display: grid;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+label {
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+input:not([type="checkbox"]) {
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid #d6dde8;
+  border-radius: 9px;
+  font-size: 16px;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+button {
+  margin-top: 12px;
+  padding: 13px 18px;
+  border: 0;
+  border-radius: 9px;
+  background: #4d6bfe;
+  color: white;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+.result {
+  margin-top: 28px;
+}
+
+.stock {
+  padding: 18px;
+  border: 1px solid #e1e7ef;
+  border-radius: 12px;
+  margin-top: 12px;
+}
+
+.stock h2 {
+  margin: 0 0 8px;
+}
+
+.stock p {
+  margin: 5px 0;
+}

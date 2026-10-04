@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stock Price Checker</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="container">
+    <section class="card">
+      <p class="eyebrow">freeCodeCamp Project</p>
+      <h1>Stock Price Checker</h1>
+      <p class="description">
+        Check the latest price of one or two NASDAQ stocks and like a stock once.
+      </p>
+
+      <form id="stock-form">
+        <label for="stock1">Stock symbol</label>
+        <input id="stock1" name="stock" placeholder="GOOG" maxlength="10" required>
+
+        <label for="stock2">Second stock (optional)</label>
+        <input id="stock2" name="stock" placeholder="MSFT" maxlength="10">
+
+        <label class="checkbox">
+          <input id="like" type="checkbox">
+          Like stock(s)
+        </label>
+
+        <button type="submit">Check Price</button>
+      </form>
+
+      <div id="result" class="result" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

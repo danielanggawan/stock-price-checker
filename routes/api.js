@@ -28,6 +28,7 @@ function getClientIp(req) {
   // Respect the first proxy-forwarded address when present.
   // The value is hashed immediately and the raw address is never stored.
   const forwarded = req.headers["x-forwarded-for"];
+
   if (typeof forwarded === "string" && forwarded.length > 0) {
     return forwarded.split(",")[0].trim();
   }
@@ -39,6 +40,7 @@ function getStockLikes(symbol) {
   if (!likesByStock.has(symbol)) {
     likesByStock.set(symbol, new Set());
   }
+
   return likesByStock.get(symbol);
 }
 
@@ -53,17 +55,24 @@ async function getStock(symbol) {
 
   const data = await response.json();
 
-  if (
-    !data ||
-    typeof data.symbol !== "string" ||
-    typeof data.latestPrice !== "number"
-  ) {
-    throw new Error("Invalid stock data received from proxy");
+  // Log the actual response so we can diagnose proxy changes if necessary.
+  console.log("Stock proxy response:", data);
+
+  if (!data || typeof data.symbol !== "string") {
+    throw new Error("Invalid stock symbol received from proxy");
+  }
+
+  // Accept numeric values as well as numeric strings.
+  const price = Number(data.latestPrice);
+
+  if (!Number.isFinite(price)) {
+    console.error("Invalid stock price received from proxy:", data);
+    throw new Error("Invalid stock price received from proxy");
   }
 
   return {
     stock: data.symbol,
-    price: data.latestPrice
+    price
   };
 }
 
@@ -109,7 +118,9 @@ router.get("/stock-prices", async (req, res) => {
     );
 
     if (stockData.length === 1) {
-      return res.json({ stockData: stockData[0] });
+      return res.json({
+        stockData: stockData[0]
+      });
     }
 
     const firstLikes = stockData[0].likes;
@@ -126,7 +137,8 @@ router.get("/stock-prices", async (req, res) => {
       }))
     });
   } catch (error) {
-    console.error(error.message);
+    console.error(error);
+
     return res.status(500).json({
       error: "Unable to retrieve stock price."
     });

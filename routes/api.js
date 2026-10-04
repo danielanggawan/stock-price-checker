@@ -9,14 +9,14 @@ const FCC_PROXY =
 const YAHOO_PROXY =
   "https://query1.finance.yahoo.com/v8/finance/chart/";
 
+// Menyimpan like berdasarkan saham.
+// Set digunakan supaya 1 IP hanya bisa like 1 kali.
 const likesByStock = new Map();
 
-/*
- * =========================================================
- * IP ANONYMIZATION
- * =========================================================
+/**
+ * Membuat hash dari IP user.
+ * Kita tidak menyimpan IP asli.
  */
-
 function anonymizeIp(ip) {
   const normalized = String(ip || "")
     .replace(/^::ffff:/, "")
@@ -28,22 +28,25 @@ function anonymizeIp(ip) {
     .digest("hex");
 }
 
+/**
+ * Mengambil IP client.
+ */
 function getClientIp(req) {
   const forwarded = req.headers["x-forwarded-for"];
 
-  if (typeof forwarded === "string" && forwarded.length > 0) {
+  if (
+    typeof forwarded === "string" &&
+    forwarded.length > 0
+  ) {
     return forwarded.split(",")[0].trim();
   }
 
   return req.ip || req.socket?.remoteAddress || "";
 }
 
-/*
- * =========================================================
- * LIKE STORAGE
- * =========================================================
+/**
+ * Mengambil Set like untuk sebuah saham.
  */
-
 function getStockLikes(symbol) {
   if (!likesByStock.has(symbol)) {
     likesByStock.set(symbol, new Set());
@@ -52,18 +55,32 @@ function getStockLikes(symbol) {
   return likesByStock.get(symbol);
 }
 
-/*
- * =========================================================
- * FETCH WITH RETRY
- * =========================================================
+/**
+ * Fetch dengan:
+ * - timeout 5 detik
+ * - retry maksimal 2 kali
+ *
+ * Ini mencegah API menggantung selamanya
+ * jika stock proxy bermasalah.
  */
-
-async function fetchWithRetry(url, attempts = 3) {
+async function fetchWithRetry(url, attempts = 2) {
   let lastError;
 
-  for (let attempt = 1; attempt <= attempts; attempt++) {
+  for (
+    let attempt = 1;
+    attempt <= attempts;
+    attempt++
+  ) {
+    const controller = new AbortController();
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 5000);
+
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        signal: controller.signal
+      });
 
       if (response.ok) {
         return response;
@@ -73,7 +90,15 @@ async function fetchWithRetry(url, attempts = 3) {
         `HTTP ${response.status}`
       );
     } catch (error) {
-      lastError = error;
+      if (error.name === "AbortError") {
+        lastError = new Error(
+          "Request timeout after 5 seconds"
+        );
+      } else {
+        lastError = error;
+      }
+    } finally {
+      clearTimeout(timeout);
     }
 
     if (attempt < attempts) {
@@ -86,34 +111,22 @@ async function fetchWithRetry(url, attempts = 3) {
   throw lastError;
 }
 
-/*
- * =========================================================
- * FREECODECAMP STOCK API
- * =========================================================
+/**
+ * Mengambil harga saham dari
+ * freeCodeCamp stock proxy.
  */
-
 async function getFromFCC(symbol) {
   const url =
     `${FCC_PROXY}${encodeURIComponent(symbol)}/quote`;
 
-  const response = await fetchWithRetry(url, 3);
+  const response = await fetchWithRetry(url, 2);
 
   const data = await response.json();
 
-  console.log("FCC proxy response:", data);
-
-  /*
-   * FCC proxy dapat mengembalikan:
-   *
-   * {
-   *   symbol: "GOOG",
-   *   latestPrice: 340.35
-   * }
-   *
-   * atau:
-   *
-   * "Unknown symbol"
-   */
+  console.log(
+    "FCC proxy response:",
+    data
+  );
 
   if (
     !data ||
@@ -139,32 +152,21 @@ async function getFromFCC(symbol) {
   };
 }
 
-/*
- * =========================================================
- * YAHOO FINANCE FALLBACK
- * =========================================================
- *
- * Digunakan jika proxy freeCodeCamp gagal.
- *
- * Contoh:
- *
- * FCC  -> MSFT -> Unknown symbol
- * Yahoo -> MSFT -> 517.53
- *
- * Ini diperlukan karena proxy FCC saat ini tidak selalu
- * memberikan data MSFT.
+/**
+ * Fallback menggunakan Yahoo Finance
+ * jika freeCodeCamp proxy gagal.
  */
-
 async function getFromYahoo(symbol) {
   const url =
     `${YAHOO_PROXY}${encodeURIComponent(symbol)}` +
     "?range=1d&interval=1m";
 
-  const response = await fetchWithRetry(url, 3);
+  const response = await fetchWithRetry(url, 2);
 
   const data = await response.json();
 
-  const result = data?.chart?.result?.[0];
+  const result =
+    data?.chart?.result?.[0];
 
   if (!result) {
     throw new Error(
@@ -191,16 +193,14 @@ async function getFromYahoo(symbol) {
   };
 }
 
-/*
- * =========================================================
- * GET STOCK
- * =========================================================
+/**
+ * Mengambil harga saham.
+ *
+ * Prioritas:
+ * 1. freeCodeCamp proxy
+ * 2. Yahoo Finance
  */
-
 async function getStock(symbol) {
-  /*
-   * Pertama selalu mencoba proxy resmi freeCodeCamp.
-   */
   try {
     return await getFromFCC(symbol);
   } catch (fccError) {
@@ -210,18 +210,16 @@ async function getStock(symbol) {
     );
   }
 
-  /*
-   * Kalau FCC gagal, gunakan Yahoo sebagai fallback.
-   */
   try {
-    const fallback = await getFromYahoo(symbol);
+    const yahooResult =
+      await getFromYahoo(symbol);
 
     console.log(
       `Yahoo fallback response for ${symbol}:`,
-      fallback
+      yahooResult
     );
 
-    return fallback;
+    return yahooResult;
   } catch (yahooError) {
     console.error(
       `Yahoo fallback failed for ${symbol}:`,
@@ -234,32 +232,23 @@ async function getStock(symbol) {
   }
 }
 
-/*
- * =========================================================
- * PROCESS STOCK
- * =========================================================
+/**
+ * Memproses satu saham.
  */
-
 async function processStock(
   symbol,
   like,
   anonymizedIp
 ) {
-  const stock = await getStock(symbol);
+  const stock =
+    await getStock(symbol);
 
-  const likes = getStockLikes(stock.stock);
+  const likes =
+    getStockLikes(stock.stock);
 
-  /*
-   * Like hanya dihitung satu kali untuk IP yang sama.
-   *
-   * Kalau user melakukan like kedua kali:
-   *
-   * likes.has(...) === true
-   *
-   * maka kita TIDAK menambah like lagi.
-   *
-   * Request tetap 200 OK.
-   */
+  // Hanya tambahkan like jika:
+  // - like=true
+  // - IP belum pernah like saham tersebut
   if (
     like === true &&
     !likes.has(anonymizedIp)
@@ -274,40 +263,29 @@ async function processStock(
   };
 }
 
-/*
- * =========================================================
+/**
  * GET /api/stock-prices
- * =========================================================
+ *
+ * Contoh:
+ *
+ * /api/stock-prices?stock=GOOG
+ *
+ * /api/stock-prices?stock=GOOG&like=true
+ *
+ * /api/stock-prices?stock=GOOG&stock=MSFT
  */
-
 router.get(
   "/stock-prices",
   async (req, res) => {
     try {
       let stocks = req.query.stock;
 
-      /*
-       * Kalau hanya satu stock:
-       *
-       * ?stock=GOOG
-       *
-       * Express memberikan string.
-       *
-       * Kalau dua stock:
-       *
-       * ?stock=GOOG&stock=MSFT
-       *
-       * Express memberikan array.
-       */
-
+      // Jika hanya satu stock, ubah menjadi array.
       if (!Array.isArray(stocks)) {
         stocks = [stocks];
       }
 
-      /*
-       * Bersihkan input.
-       */
-
+      // Bersihkan input.
       stocks = stocks
         .filter(
           (stock) =>
@@ -319,10 +297,7 @@ router.get(
         )
         .filter(Boolean);
 
-      /*
-       * FCC hanya membutuhkan 1 atau 2 saham.
-       */
-
+      // Harus 1 atau 2 saham.
       if (
         stocks.length === 0 ||
         stocks.length > 2
@@ -336,20 +311,16 @@ router.get(
       const like =
         req.query.like === "true";
 
-      const anonymizedIp =
-        anonymizeIp(
-          getClientIp(req)
-        );
+      const clientIp =
+        getClientIp(req);
 
-      /*
-       * Proses saham satu per satu.
-       *
-       * Ini sengaja tidak menggunakan Promise.all()
-       * supaya proxy tidak ditembak bersamaan.
-       */
+      const anonymizedIp =
+        anonymizeIp(clientIp);
 
       const stockData = [];
 
+      // Diproses satu per satu supaya request
+      // tidak membanjiri proxy secara bersamaan.
       for (const symbol of stocks) {
         const data =
           await processStock(
@@ -361,12 +332,7 @@ router.get(
         stockData.push(data);
       }
 
-      /*
-       * =====================================================
-       * SATU STOCK
-       * =====================================================
-       */
-
+      // Jika hanya 1 saham.
       if (stockData.length === 1) {
         return res.json({
           stockData:
@@ -374,20 +340,8 @@ router.get(
         });
       }
 
-      /*
-       * =====================================================
-       * DUA STOCK
-       * =====================================================
-       *
-       * FCC meminta:
-       *
-       * stock pertama:
-       * likes1 - likes2
-       *
-       * stock kedua:
-       * likes2 - likes1
-       */
-
+      // Jika 2 saham:
+      // hitung perbedaan jumlah like.
       const firstLikes =
         stockData[0].likes;
 
@@ -427,13 +381,8 @@ router.get(
   }
 );
 
-/*
- * =========================================================
- * EXPORT
- * =========================================================
- */
-
 module.exports = router;
 
+// Export untuk testing/debugging internal.
 module.exports._likesByStock =
   likesByStock;

@@ -3,21 +3,25 @@ const crypto = require("crypto");
 
 const router = express.Router();
 
-const PROXY_URL =
+const FCC_PROXY =
   "https://stock-price-checker-proxy.freecodecamp.rocks/v1/stock/";
 
-// In-memory store.
-// This is sufficient for the FCC functional tests and keeps the project
-// runnable without requiring a MongoDB account.
+const YAHOO_PROXY =
+  "https://query1.finance.yahoo.com/v8/finance/chart/";
+
 const likesByStock = new Map();
 
+/*
+ * =========================================================
+ * IP ANONYMIZATION
+ * =========================================================
+ */
+
 function anonymizeIp(ip) {
-  // Normalize common IPv4-mapped IPv6 addresses.
-  let normalized = String(ip || "")
+  const normalized = String(ip || "")
     .replace(/^::ffff:/, "")
     .trim();
 
-  // Hash the IP before storing it. The raw IP is never saved.
   return crypto
     .createHash("sha256")
     .update(normalized)
@@ -25,8 +29,6 @@ function anonymizeIp(ip) {
 }
 
 function getClientIp(req) {
-  // Respect the first proxy-forwarded address when present.
-  // The value is hashed immediately and the raw address is never stored.
   const forwarded = req.headers["x-forwarded-for"];
 
   if (typeof forwarded === "string" && forwarded.length > 0) {
@@ -36,6 +38,12 @@ function getClientIp(req) {
   return req.ip || req.socket?.remoteAddress || "";
 }
 
+/*
+ * =========================================================
+ * LIKE STORAGE
+ * =========================================================
+ */
+
 function getStockLikes(symbol) {
   if (!likesByStock.has(symbol)) {
     likesByStock.set(symbol, new Set());
@@ -44,43 +52,218 @@ function getStockLikes(symbol) {
   return likesByStock.get(symbol);
 }
 
-async function getStock(symbol) {
-  const response = await fetch(
-    `${PROXY_URL}${encodeURIComponent(symbol)}/quote`
-  );
+/*
+ * =========================================================
+ * FETCH WITH RETRY
+ * =========================================================
+ */
 
-  if (!response.ok) {
-    throw new Error(`Stock proxy returned ${response.status}`);
+async function fetchWithRetry(url, attempts = 3) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetch(url);
+
+      if (response.ok) {
+        return response;
+      }
+
+      lastError = new Error(
+        `HTTP ${response.status}`
+      );
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < attempts) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, 500)
+      );
+    }
   }
+
+  throw lastError;
+}
+
+/*
+ * =========================================================
+ * FREECODECAMP STOCK API
+ * =========================================================
+ */
+
+async function getFromFCC(symbol) {
+  const url =
+    `${FCC_PROXY}${encodeURIComponent(symbol)}/quote`;
+
+  const response = await fetchWithRetry(url, 3);
 
   const data = await response.json();
 
-  // Log the actual response so we can diagnose proxy changes if necessary.
-  console.log("Stock proxy response:", data);
+  console.log("FCC proxy response:", data);
 
-  if (!data || typeof data.symbol !== "string") {
-    throw new Error("Invalid stock symbol received from proxy");
+  /*
+   * FCC proxy dapat mengembalikan:
+   *
+   * {
+   *   symbol: "GOOG",
+   *   latestPrice: 340.35
+   * }
+   *
+   * atau:
+   *
+   * "Unknown symbol"
+   */
+
+  if (
+    !data ||
+    typeof data !== "object" ||
+    typeof data.symbol !== "string"
+  ) {
+    throw new Error(
+      `FCC proxy does not support ${symbol}`
+    );
   }
 
-  // Accept numeric values as well as numeric strings.
   const price = Number(data.latestPrice);
 
   if (!Number.isFinite(price)) {
-    console.error("Invalid stock price received from proxy:", data);
-    throw new Error("Invalid stock price received from proxy");
+    throw new Error(
+      `Invalid FCC price for ${symbol}`
+    );
   }
 
   return {
-    stock: data.symbol,
+    stock: data.symbol.toUpperCase(),
     price
   };
 }
 
-async function processStock(symbol, like, anonymizedIp) {
+/*
+ * =========================================================
+ * YAHOO FINANCE FALLBACK
+ * =========================================================
+ *
+ * Digunakan jika proxy freeCodeCamp gagal.
+ *
+ * Contoh:
+ *
+ * FCC  -> MSFT -> Unknown symbol
+ * Yahoo -> MSFT -> 517.53
+ *
+ * Ini diperlukan karena proxy FCC saat ini tidak selalu
+ * memberikan data MSFT.
+ */
+
+async function getFromYahoo(symbol) {
+  const url =
+    `${YAHOO_PROXY}${encodeURIComponent(symbol)}` +
+    "?range=1d&interval=1m";
+
+  const response = await fetchWithRetry(url, 3);
+
+  const data = await response.json();
+
+  const result = data?.chart?.result?.[0];
+
+  if (!result) {
+    throw new Error(
+      `Yahoo Finance has no data for ${symbol}`
+    );
+  }
+
+  const meta = result.meta || {};
+
+  const price = Number(
+    meta.regularMarketPrice ??
+    meta.chartPreviousClose
+  );
+
+  if (!Number.isFinite(price)) {
+    throw new Error(
+      `Invalid Yahoo price for ${symbol}`
+    );
+  }
+
+  return {
+    stock: symbol.toUpperCase(),
+    price
+  };
+}
+
+/*
+ * =========================================================
+ * GET STOCK
+ * =========================================================
+ */
+
+async function getStock(symbol) {
+  /*
+   * Pertama selalu mencoba proxy resmi freeCodeCamp.
+   */
+  try {
+    return await getFromFCC(symbol);
+  } catch (fccError) {
+    console.warn(
+      `FCC proxy failed for ${symbol}:`,
+      fccError.message
+    );
+  }
+
+  /*
+   * Kalau FCC gagal, gunakan Yahoo sebagai fallback.
+   */
+  try {
+    const fallback = await getFromYahoo(symbol);
+
+    console.log(
+      `Yahoo fallback response for ${symbol}:`,
+      fallback
+    );
+
+    return fallback;
+  } catch (yahooError) {
+    console.error(
+      `Yahoo fallback failed for ${symbol}:`,
+      yahooError.message
+    );
+
+    throw new Error(
+      `Unable to retrieve stock price for ${symbol}`
+    );
+  }
+}
+
+/*
+ * =========================================================
+ * PROCESS STOCK
+ * =========================================================
+ */
+
+async function processStock(
+  symbol,
+  like,
+  anonymizedIp
+) {
   const stock = await getStock(symbol);
+
   const likes = getStockLikes(stock.stock);
 
-  if (like === true && !likes.has(anonymizedIp)) {
+  /*
+   * Like hanya dihitung satu kali untuk IP yang sama.
+   *
+   * Kalau user melakukan like kedua kali:
+   *
+   * likes.has(...) === true
+   *
+   * maka kita TIDAK menambah like lagi.
+   *
+   * Request tetap 200 OK.
+   */
+  if (
+    like === true &&
+    !likes.has(anonymizedIp)
+  ) {
     likes.add(anonymizedIp);
   }
 
@@ -91,61 +274,166 @@ async function processStock(symbol, like, anonymizedIp) {
   };
 }
 
-router.get("/stock-prices", async (req, res) => {
-  try {
-    let stocks = req.query.stock;
+/*
+ * =========================================================
+ * GET /api/stock-prices
+ * =========================================================
+ */
 
-    if (!Array.isArray(stocks)) {
-      stocks = [stocks];
-    }
+router.get(
+  "/stock-prices",
+  async (req, res) => {
+    try {
+      let stocks = req.query.stock;
 
-    stocks = stocks
-      .filter((stock) => typeof stock === "string")
-      .map((stock) => stock.trim().toUpperCase())
-      .filter(Boolean);
+      /*
+       * Kalau hanya satu stock:
+       *
+       * ?stock=GOOG
+       *
+       * Express memberikan string.
+       *
+       * Kalau dua stock:
+       *
+       * ?stock=GOOG&stock=MSFT
+       *
+       * Express memberikan array.
+       */
 
-    if (stocks.length === 0 || stocks.length > 2) {
-      return res.status(400).json({
-        error: "Provide one or two NASDAQ stock symbols."
-      });
-    }
+      if (!Array.isArray(stocks)) {
+        stocks = [stocks];
+      }
 
-    const like = req.query.like === "true";
-    const anonymizedIp = anonymizeIp(getClientIp(req));
+      /*
+       * Bersihkan input.
+       */
 
-    const stockData = await Promise.all(
-      stocks.map((symbol) => processStock(symbol, like, anonymizedIp))
-    );
+      stocks = stocks
+        .filter(
+          (stock) =>
+            typeof stock === "string"
+        )
+        .map(
+          (stock) =>
+            stock.trim().toUpperCase()
+        )
+        .filter(Boolean);
 
-    if (stockData.length === 1) {
+      /*
+       * FCC hanya membutuhkan 1 atau 2 saham.
+       */
+
+      if (
+        stocks.length === 0 ||
+        stocks.length > 2
+      ) {
+        return res.status(400).json({
+          error:
+            "Provide one or two NASDAQ stock symbols."
+        });
+      }
+
+      const like =
+        req.query.like === "true";
+
+      const anonymizedIp =
+        anonymizeIp(
+          getClientIp(req)
+        );
+
+      /*
+       * Proses saham satu per satu.
+       *
+       * Ini sengaja tidak menggunakan Promise.all()
+       * supaya proxy tidak ditembak bersamaan.
+       */
+
+      const stockData = [];
+
+      for (const symbol of stocks) {
+        const data =
+          await processStock(
+            symbol,
+            like,
+            anonymizedIp
+          );
+
+        stockData.push(data);
+      }
+
+      /*
+       * =====================================================
+       * SATU STOCK
+       * =====================================================
+       */
+
+      if (stockData.length === 1) {
+        return res.json({
+          stockData:
+            stockData[0]
+        });
+      }
+
+      /*
+       * =====================================================
+       * DUA STOCK
+       * =====================================================
+       *
+       * FCC meminta:
+       *
+       * stock pertama:
+       * likes1 - likes2
+       *
+       * stock kedua:
+       * likes2 - likes1
+       */
+
+      const firstLikes =
+        stockData[0].likes;
+
+      const secondLikes =
+        stockData[1].likes;
+
       return res.json({
-        stockData: stockData[0]
+        stockData:
+          stockData.map(
+            (stock, index) => ({
+              stock:
+                stock.stock,
+
+              price:
+                stock.price,
+
+              rel_likes:
+                index === 0
+                  ? firstLikes -
+                    secondLikes
+                  : secondLikes -
+                    firstLikes
+            })
+          )
+      });
+    } catch (error) {
+      console.error(
+        "Stock Price Checker Error:",
+        error
+      );
+
+      return res.status(500).json({
+        error:
+          "Unable to retrieve stock price."
       });
     }
-
-    const firstLikes = stockData[0].likes;
-    const secondLikes = stockData[1].likes;
-
-    return res.json({
-      stockData: stockData.map((stock, index) => ({
-        stock: stock.stock,
-        price: stock.price,
-        rel_likes:
-          index === 0
-            ? firstLikes - secondLikes
-            : secondLikes - firstLikes
-      }))
-    });
-  } catch (error) {
-    console.error(error);
-
-    return res.status(500).json({
-      error: "Unable to retrieve stock price."
-    });
   }
-});
+);
+
+/*
+ * =========================================================
+ * EXPORT
+ * =========================================================
+ */
 
 module.exports = router;
 
-// Exported for tests/development if needed.
-module.exports._likesByStock = likesByStock;
+module.exports._likesByStock =
+  likesByStock;
